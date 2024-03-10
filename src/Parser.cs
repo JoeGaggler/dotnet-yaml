@@ -368,14 +368,26 @@ public static class Parser
         int ProcessText(ReadOnlySpan<LexToken> lex, int indent, int left)
         {
             // scalar / mapping / end
-            var didSeeNewLine = false;
+            var didSeeNewLines = 0;
+            var didSeeSpaces = 0;
+            var didSeeNewLineBeforeText = false;
             var scalarValue = lex[left].Value;
             var there = left + 1;
             while (true)
             {
                 var peek1 = PeekAt(lex, there);
-                if (peek1 == LexTokenType.Spaces) { scalarValue += lex[there].Value; there++; continue; }
-                if (peek1 == LexTokenType.Text) { scalarValue += lex[there].Value; there++; continue; }
+                if (peek1 == LexTokenType.Spaces)
+                {
+                    didSeeSpaces += lex[there].Value.Length;
+                    there++;
+                    continue;
+                }
+                if (peek1 == LexTokenType.Text)
+                {
+                    if (didSeeNewLineBeforeText) { didSeeNewLineBeforeText = false; scalarValue += ' '; }
+                    if (didSeeSpaces > 0) { scalarValue += new String(' ', didSeeSpaces); didSeeSpaces = 0; }
+                    scalarValue += lex[there].Value; there++; continue;
+                }
                 if (peek1 == LexTokenType.End)
                 {
                     AddToken(ParseTokenType.Scalar, scalarValue, left);
@@ -383,7 +395,9 @@ public static class Parser
                 }
                 if (peek1 == LexTokenType.Line)
                 {
-                    scalarValue += " ";
+                    didSeeSpaces = 0; // ignore spaces at the end of the line
+                    didSeeNewLineBeforeText = true;
+
                     var lineStart = there++;
 
                     peek1 = PeekAt(lex, there);
@@ -409,12 +423,12 @@ public static class Parser
                     }
 
                     // Subsequent lines have different processing
-                    didSeeNewLine = true;
+                    didSeeNewLines++;
                     continue;
                 }
                 if (peek1 == LexTokenType.Map)
                 {
-                    if (didSeeNewLine) { throw ParseFailed($"unexpected map start after new line in ProcessText for op {op} at {there}"); }
+                    if (didSeeNewLines != 0) { throw ParseFailed($"unexpected map start after new line in ProcessText for op {op} at {there}"); }
 
                     if (indent > minIndent)
                     {
