@@ -1,0 +1,6 @@
+# comment
+connection: my connection info
+
+channels:
+  - id: channel.0
+  - url: https//example.com/0 # TODO: omitting colon, breaks map parsing
