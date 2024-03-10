@@ -1,0 +1,8 @@
+- str+
+- doc+
+- seq+
+- text: null # ref: ""
+- text: one
+- seq-
+- doc-
+- str-

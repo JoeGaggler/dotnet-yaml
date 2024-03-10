@@ -30,4 +30,45 @@ public static class Translate
         }
         return result;
     }
+
+    public static List<ParseToken> FromOverride(String path)
+    {
+        var input = Translate.FromDocument(File.ReadAllText(path));
+        var output = new List<ParseToken>();
+        for (int i = 0; i < input.Count; i++)
+        {
+            var token = input[i];
+            if (token.Type != ParseTokenType.Scalar) { continue; }
+
+            var value = token.Value;
+            switch (value)
+            {
+                case "str+": output.Add(new(ParseTokenType.StreamStart, null, i)); break;
+                case "str-": output.Add(new(ParseTokenType.StreamEnd, null, i)); break;
+                case "doc+": output.Add(new(ParseTokenType.DocStart, null, i)); break;
+                case "doc-": output.Add(new(ParseTokenType.DocEnd, null, i)); break;
+                case "seq+": output.Add(new(ParseTokenType.SeqStart, null, i)); break;
+                case "seq-": output.Add(new(ParseTokenType.SeqEnd, null, i)); break;
+                case "map+": output.Add(new(ParseTokenType.MapStart, null, i)); break;
+                case "map-": output.Add(new(ParseTokenType.MapEnd, null, i)); break;
+                case "text":
+                {
+                    i++;
+                    var next = input[i];
+                    if (next.Type != ParseTokenType.Scalar) { throw new InvalidOperationException("expected scalar"); }
+                    var scalar = next.Value?.Trim() switch
+                    {
+                        null => null,
+                        "null" => null,
+                        "~" => null,
+                        _ => next.Value
+                    };
+                    output.Add(new(ParseTokenType.Scalar, scalar, i));
+                    break;
+                }
+                default: throw new NotImplementedException($"unexpected override value: {value}");
+            }
+        }
+        return output;
+    }
 }

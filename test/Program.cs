@@ -1,9 +1,27 @@
 ﻿List<String> log = new();
 foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
 {
+    // Skip override files the reference parser
+    if (yamlPath.EndsWith(".expect.yml", StringComparison.InvariantCultureIgnoreCase)) { continue; }
+
     Console.WriteLine($"--- {yamlPath} ---");
     var yaml = File.ReadAllText(yamlPath);
-    var expect = Translate.FromDocument(yaml);
+
+    List<Pingmint.Yaml.ParseToken> expect;
+    var overridePath = yamlPath.Replace(".yml", ".expect.yml");
+    if (File.Exists(overridePath))
+    {
+        Console.WriteLine("Using expect-override.");
+
+        var overrideTokens = Translate.FromOverride(overridePath);
+        expect = overrideTokens;
+    }
+    else
+    {
+        expect = Translate.FromDocument(yaml);
+        Console.WriteLine("Using reference parser.");
+    }
+
     Console.WriteLine("Expect:");
     foreach (var line in expect)
     {
