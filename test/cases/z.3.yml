@@ -1,0 +1,23 @@
+# comment
+# connection: my connection info
+
+channels:
+  - id: channel.0
+  - url: https//example.com/0 # TODO: omitting colon, breaks map parsing
+  - id: channel.1
+    url: https//example.com/1
+
+teams:
+  - id: team.0
+    channel: channel.0
+    members:
+      - name: Aluminum
+      - name: Berillium
+      - name: Carbon
+      - name: Deuterium
+
+  - id: team.1
+    channel: channel.1
+    members:
+      - name: Foo
+      - name: Bar

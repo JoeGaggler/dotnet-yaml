@@ -206,7 +206,7 @@ public static class Parser
                 // TODO: this is likely wrong when the string contains lexer tokens
                 var c2 = yaml[here];
                 if (Char.IsLetterOrDigit(c2)) { }
-                else if (c2 == ' ') { }
+                else if (c2 == ' ') { break; }
                 else if (c2 == '\r') { break; }
                 else if (c2 == '\n') { break; }
                 else if (c2 == ':') { break; }
@@ -223,7 +223,6 @@ public static class Parser
     public static List<ParseToken> Parse(ReadOnlySpan<LexToken> lex)
     {
         var debug = true;
-        void Debug(String message) { if (debug) { Console.WriteLine(message); } }
 
         var lexLength = lex.Length;
         var tokens = new List<ParseToken>();
@@ -325,9 +324,10 @@ public static class Parser
                         }
                         case LexTokenType.Dash:
                         {
-                            tokens.Add(new(ParseTokenType.SeqStart, null, left));
+                            AddToken(ParseTokenType.SeqStart, null, left);
+                            if (PeekAt(lex, left + 1) != LexTokenType.Spaces) { throw ParseFailed($"unexpected dash without space at {left}"); }
                             Push(ParseState.Sequence, indent);
-                            here = ProcessDash(lex, indent + 1, left);
+                            here = ProcessDash(lex, indent, left);
                             break;
                         }
                         default: throw ParseFailed($"map: unexpected peek token {peek}");
@@ -363,8 +363,16 @@ public static class Parser
 
         ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+        void Debug(String message, int add = 0)
+        {
+            if (!debug) return;
+            Console.Write(new String(' ', depth * 2 + add));
+            Console.WriteLine(message);
+        }
+
         int ProcessDash(ReadOnlySpan<LexToken> lex, int indent, int left)
         {
+            Debug($"=== PROCDASH: min={minIndent} ind={indent} txt={lex[left].Value} left={left}");
             var newIndent = indent + 1; // track nested sequence indent
             var left1 = left + 1;
         repeat:
@@ -385,6 +393,7 @@ public static class Parser
         // text in a node can be scalar or map start
         int ProcessText(ReadOnlySpan<LexToken> lex, int indent, int left)
         {
+            Debug($"=== PROCTEXT: min={minIndent} ind={indent} txt={lex[left].Value} left={left}");
             // scalar / mapping / end
             var didSeeNewLines = 0;
             var didSeeSpaces = 0;
@@ -393,7 +402,7 @@ public static class Parser
             var there = left + 1;
             while (true)
             {
-                Console.WriteLine($"=== TEXT: min={minIndent} ind={indent} txt={scalarValue} left={left} there={there}");
+                Debug($"=== TEXT: min={minIndent} ind={indent} txt={scalarValue} left={left} there={there}");
                 var peek1 = PeekAt(lex, there);
                 if (peek1 == LexTokenType.Spaces)
                 {
@@ -426,7 +435,7 @@ public static class Parser
                         newIndent = lex[there].Length;
                         there++; // skip indent
                     }
-                    Console.WriteLine($"=== TEXT LINE: min={minIndent} ind={indent} nin={newIndent} txt={scalarValue} left={left} linestart={lineStart}");
+                    Debug($"=== TEXT LINE: min={minIndent} ind={indent} nin={newIndent} txt={scalarValue} left={left} linestart={lineStart}");
                     if (newIndent <= minIndent)
                     {
                         AddToken(ParseTokenType.Scalar, scalarValue, left);
@@ -514,7 +523,7 @@ public static class Parser
 
         void Push(ParseState nextOp, int parentMinIndent)
         {
-            Debug($"=== PUSH: {op} -> {nextOp} {depth} {minIndent}=>{parentMinIndent}");
+            Debug($"=== PUSH: {op} -> {nextOp} {depth} {minIndent}=>{parentMinIndent}", 1);
             var was = op;
 
             if (depth >= MAX_DEPTH) { throw new InvalidOperationException("Stack overflow"); }
@@ -528,26 +537,27 @@ public static class Parser
 
         void Pop()
         {
-            Debug($"=== POP: {op} {depth}");
+            Debug($"=== POP: {op} {depth}", -1);
             var was = op;
-            switch (op)
-            {
-                case ParseState.Doc:
-                    tokens.Add(new(ParseTokenType.DocEnd, null, here));
-                    break;
-                case ParseState.Map:
-                    tokens.Add(new(ParseTokenType.MapEnd, null, here));
-                    break;
-                case ParseState.Sequence:
-                    tokens.Add(new(ParseTokenType.SeqEnd, null, here));
-                    break;
-                default: throw ParseFailed($"unexpected op {op}");
-            }
 
             if (depth <= 0) { throw new InvalidOperationException("Stack underflow"); }
             depth--;
             op = opStack[depth];
             minIndent = inStack[depth];
+
+            switch (was)
+            {
+                case ParseState.Doc:
+                    AddToken(ParseTokenType.DocEnd, null, here);
+                    break;
+                case ParseState.Map:
+                    AddToken(ParseTokenType.MapEnd, null, here);
+                    break;
+                case ParseState.Sequence:
+                    AddToken(ParseTokenType.SeqEnd, null, here);
+                    break;
+                default: throw ParseFailed($"unexpected op {op}");
+            }
         }
     }
 }
