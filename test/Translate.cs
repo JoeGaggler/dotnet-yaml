@@ -2,23 +2,23 @@ using Pingmint.Yaml;
 
 public static class Translate
 {
-    public static ParseToken FromEvent(YamlDotNet.Core.Events.ParsingEvent parsingEvent, String? value, int index) => parsingEvent switch
+    public static Node FromEvent(YamlDotNet.Core.Events.ParsingEvent parsingEvent, String? value, int index) => parsingEvent switch
     {
-        YamlDotNet.Core.Events.StreamStart _ => new(ParseTokenType.StreamStart, value, index),
-        YamlDotNet.Core.Events.StreamEnd _ => new(ParseTokenType.StreamEnd, value, index),
-        YamlDotNet.Core.Events.DocumentStart _ => new(ParseTokenType.DocStart, value, index),
-        YamlDotNet.Core.Events.DocumentEnd _ => new(ParseTokenType.DocEnd, value, index),
-        YamlDotNet.Core.Events.Scalar scalar => new(ParseTokenType.Scalar, value, index),
-        YamlDotNet.Core.Events.SequenceStart _ => new(ParseTokenType.SeqStart, value, index),
-        YamlDotNet.Core.Events.SequenceEnd _ => new(ParseTokenType.SeqEnd, value, index),
-        YamlDotNet.Core.Events.MappingStart _ => new(ParseTokenType.MapStart, value, index),
-        YamlDotNet.Core.Events.MappingEnd _ => new(ParseTokenType.MapEnd, value, index),
+        YamlDotNet.Core.Events.StreamStart _ => new(NodeType.StreamStart, index..index, value),
+        YamlDotNet.Core.Events.StreamEnd _ => new(NodeType.StreamEnd, index..index, value),
+        YamlDotNet.Core.Events.DocumentStart _ => new(NodeType.DocStart, index..index, value),
+        YamlDotNet.Core.Events.DocumentEnd _ => new(NodeType.DocEnd, index..index, value),
+        YamlDotNet.Core.Events.Scalar scalar => new(NodeType.Scalar, index..index, value),
+        YamlDotNet.Core.Events.SequenceStart _ => new(NodeType.SeqStart, index..index, value),
+        YamlDotNet.Core.Events.SequenceEnd _ => new(NodeType.SeqEnd, index..index, value),
+        YamlDotNet.Core.Events.MappingStart _ => new(NodeType.MapStart, index..index, value),
+        YamlDotNet.Core.Events.MappingEnd _ => new(NodeType.MapEnd, index..index, value),
         _ => throw new NotImplementedException($"unexpected event: {parsingEvent.GetType().FullName}")
     };
 
-    public static List<ParseToken> FromDocument(String yaml)
+    public static List<Node> FromDocument(String yaml)
     {
-        var result = new List<ParseToken>();
+        var result = new List<Node>();
         var stringReader = new StringReader(yaml);
         var parser = new YamlDotNet.Core.Parser(stringReader);
         int index = -1;
@@ -31,31 +31,31 @@ public static class Translate
         return result;
     }
 
-    public static List<ParseToken> FromOverride(String path)
+    public static List<Node> FromOverride(String path)
     {
         var input = Translate.FromDocument(File.ReadAllText(path));
-        var output = new List<ParseToken>();
+        var output = new List<Node>();
         for (int i = 0; i < input.Count; i++)
         {
             var token = input[i];
-            if (token.Type != ParseTokenType.Scalar) { continue; }
+            if (token.Type != NodeType.Scalar) { continue; }
 
             var value = token.Value;
             switch (value)
             {
-                case "str+": output.Add(new(ParseTokenType.StreamStart, null, i)); break;
-                case "str-": output.Add(new(ParseTokenType.StreamEnd, null, i)); break;
-                case "doc+": output.Add(new(ParseTokenType.DocStart, null, i)); break;
-                case "doc-": output.Add(new(ParseTokenType.DocEnd, null, i)); break;
-                case "seq+": output.Add(new(ParseTokenType.SeqStart, null, i)); break;
-                case "seq-": output.Add(new(ParseTokenType.SeqEnd, null, i)); break;
-                case "map+": output.Add(new(ParseTokenType.MapStart, null, i)); break;
-                case "map-": output.Add(new(ParseTokenType.MapEnd, null, i)); break;
+                case "str+": output.Add(new(NodeType.StreamStart, i..i, null)); break;
+                case "str-": output.Add(new(NodeType.StreamEnd, i..i, null)); break;
+                case "doc+": output.Add(new(NodeType.DocStart, i..i, null)); break;
+                case "doc-": output.Add(new(NodeType.DocEnd, i..i, null)); break;
+                case "seq+": output.Add(new(NodeType.SeqStart, i..i, null)); break;
+                case "seq-": output.Add(new(NodeType.SeqEnd, i..i, null)); break;
+                case "map+": output.Add(new(NodeType.MapStart, i..i, null)); break;
+                case "map-": output.Add(new(NodeType.MapEnd, i..i, null)); break;
                 case "text":
                 {
                     i++;
                     var next = input[i];
-                    if (next.Type != ParseTokenType.Scalar) { throw new InvalidOperationException("expected scalar"); }
+                    if (next.Type != NodeType.Scalar) { throw new InvalidOperationException("expected scalar"); }
                     var scalar = next.Value?.Trim() switch
                     {
                         null => null,
@@ -63,7 +63,7 @@ public static class Translate
                         "~" => null,
                         _ => next.Value
                     };
-                    output.Add(new(ParseTokenType.Scalar, scalar, i));
+                    output.Add(new(NodeType.Scalar, i..i, scalar));
                     break;
                 }
                 default: throw new NotImplementedException($"unexpected override value: {value}");

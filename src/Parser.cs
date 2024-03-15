@@ -1,4 +1,25 @@
+using System.Security.Cryptography.X509Certificates;
+
 namespace Pingmint.Yaml;
+
+public struct Run
+{
+    public readonly int Start;
+    public readonly int Length;
+
+    public Run(int start, int length = 0)
+    {
+        Start = start;
+        Length = length;
+    }
+
+    public static implicit operator Run(Range range) => new Run(range.Start.Value, range.End.Value - range.Start.Value);
+
+    public Boolean IsEmpty => Length == 0;
+    public Int32 End => Start + Length;
+
+    public static Run Empty => new Run(0, 0);
+}
 
 public enum LexTokenType : int
 {
@@ -44,9 +65,10 @@ public struct LexToken
     };
 }
 
-public enum ParseTokenType : int
+public enum NodeType : int
 {
-    End = 0,
+    End,
+    Dedent,
     StreamStart,
     StreamEnd,
     DocStart,
@@ -58,32 +80,49 @@ public enum ParseTokenType : int
     Scalar,
 }
 
-public struct ParseToken
+public struct Node
 {
-    public ParseTokenType Type;
-    public String? Value; // TODO: span
-    public int Start;
+    public NodeType Type;
+    public Run Run;
+    public String? Value;
 
-    public ParseToken(ParseTokenType type, String? value, int start)
+    public Node(NodeType type, Run run, String? value)
     {
         Type = type;
-        Start = start;
+        Run = run;
         Value = value;
+    }
+
+    public Node(NodeType type, Run run)
+    {
+        Type = type;
+        Run = run;
+        Value = null;
+    }
+
+    public Node(NodeType type, int position)
+    {
+        Type = type;
+        Run = new Run(position, 0);
+        Value = null;
     }
 
     public int Length => Value?.Length ?? 0;
 
+    public static Node End(Run run) => new(NodeType.End, run);
+    public static Node Dedent(Run run) => new(NodeType.Dedent, run);
+
     public String Name => Type switch
     {
-        ParseTokenType.StreamStart => "str+",
-        ParseTokenType.StreamEnd => "str-",
-        ParseTokenType.DocStart => "doc+",
-        ParseTokenType.DocEnd => "doc-",
-        ParseTokenType.MapStart => "map+",
-        ParseTokenType.MapEnd => "map-",
-        ParseTokenType.SeqStart => "seq+",
-        ParseTokenType.SeqEnd => "seq-",
-        ParseTokenType.Scalar => "text",
+        NodeType.StreamStart => "str+",
+        NodeType.StreamEnd => "str-",
+        NodeType.DocStart => "doc+",
+        NodeType.DocEnd => "doc-",
+        NodeType.MapStart => "map+",
+        NodeType.MapEnd => "map-",
+        NodeType.SeqStart => "seq+",
+        NodeType.SeqEnd => "seq-",
+        NodeType.Scalar => "text",
         _ => throw new NotImplementedException($"unexpected token: {Type}")
     };
 }
@@ -105,9 +144,15 @@ public static class Parser
         var tokens = new List<LexToken>();
         var here = 0;
         var col = 0;
+
+        // HACK: injecting indent at start of document
+        if (yaml[0] == ' ') throw new NotImplementedException("First char cannot be a space"); // TODO
+        tokens.Add(new LexToken(LexTokenType.Indent, 0, 0, "", 0));
+
         while (here < yaml.Length)
         {
             var c = yaml[here];
+            Console.WriteLine($"LexLoop: {here} - col={col}: {c} {(int)c}");
             if (c == '-')
             {
                 if (here + 2 < yaml.Length && yaml[here + 1] == '-' && yaml[here + 2] == '-')
@@ -180,6 +225,7 @@ public static class Parser
 
             if (c == ':')
             {
+                Console.WriteLine($"Colon: {here} - col={col}");
                 tokens.Add(new LexToken(LexTokenType.Colon, here, 1, ":", col));
                 here++;
                 col++;
@@ -234,546 +280,437 @@ public static class Parser
                 col++;
             }
 
+            Console.WriteLine($"Text: {start} - {here} col({textCol}-{col}) = {yaml[start..here]}");
             tokens.Add(new LexToken(LexTokenType.Text, start, here - start, yaml[start..here].ToString(), textCol));
         }
         return tokens.ToArray();
     }
 
-    public static List<ParseToken> Parse(ReadOnlySpan<LexToken> lex)
+    public static List<Node> Parse(ReadOnlySpan<LexToken> lex)
     {
         var debug = true;
-
         var lexLength = lex.Length;
-        var tokens = new List<ParseToken>();
-
-        var op = ParseState.Stream; // op means "inside of"
-        var minIndent = -1;
-        var here = 0;
-        var indent = 0;
-
-        const int MAX_DEPTH = 32;
-        var depth = 0;
-        var opStack = new ParseState[MAX_DEPTH];
-        var inStack = new Int32[MAX_DEPTH];
-
-        // State: Scalar
-        String? scalarValue = null;
-        Boolean scalarLines = false;
-
-        var cheat = 0; // TODO: this is likely not tracked properly
-
-        AddToken(ParseTokenType.StreamStart, null, here);
-        while (true)
+        var tokens = new List<Node>();
+        try
         {
-            var peek = Peek(lex, here);
-            Debug($"=== LOOP {here}={peek} {op} ===");
-            if (op == ParseState.Stream)
-            {
-                if (peek == LexTokenType.End) { AddToken(ParseTokenType.StreamEnd, null, here); break; } // end stream is the final token
-                if (peek == LexTokenType.Line) { here++; continue; } // ignore leading lines
-                if (peek == LexTokenType.DocumentStart)
-                {
-                    if (indent != 0) { throw Failed($"Document start token must not be indented, found: {indent}."); }
-                    AddToken(ParseTokenType.DocStart, null, here);
-                    Push(ParseState.Doc, -1); // document never escapes due to dedent
-                    here++; // after document start
-                    continue;
-                }
-                if (peek == LexTokenType.Indent) { AdvanceIndent(lex); continue; }
-                if (peek == LexTokenType.Text || peek == LexTokenType.Dash)
-                {
-                    AddToken(ParseTokenType.DocStart, null, here);
-                    Push(ParseState.Doc, -1); // document never escapes due to dedent
-                    continue;
-                }
-            }
-            if (op == ParseState.Doc)
-            {
-                if (peek == LexTokenType.End)
-                {
-                    AddToken(ParseTokenType.DocEnd, null, here);
-                    Pop();
-                    continue;
-                }
-                if (peek == LexTokenType.DocumentEnd)
-                {
-                    AddToken(ParseTokenType.DocEnd, null, here);
-                    Pop();
-                    here++; // advance after document end
-                    continue;
-                }
-                if (peek == LexTokenType.Indent) { AdvanceIndent(lex); continue; }
-                if (peek == LexTokenType.Line) { here++; continue; } // ignore leading lines
-                if (peek == LexTokenType.Text) // document scalar / map key
-                {
-                    Push(ParseState.Scalar, -1);  // document scalar never escapes due to dedent
-                    SetCheat(lex[here].Column);
-                    NewScalar(lex[here].Value);
-                    here++;
-                    continue;
-                }
-                if (peek == LexTokenType.Dash)
-                {
-                    var sequenceMinIndent = indent - 1; // TODO: any indentation less than the dash?
-                    AddToken(ParseTokenType.SeqStart, null, here);
-                    Push(ParseState.Sequence, sequenceMinIndent); // sequence continues until dedent from parent indentation
-                    Push(ParseState.SequenceItem, indent); // item must be indented more than the dash
-                    NewScalar();
-                    here++;
-                    continue;
-                }
-            }
-            if (op == ParseState.Scalar)
-            {
-                if (peek == LexTokenType.End)
-                {
-                    AddToken(ParseTokenType.Scalar, scalarValue, here);
-                    NewScalar(); // TODO: make obsolete
-                    Pop();
-                    continue;
-                }
-                if (peek == LexTokenType.Line) { HandleLineForScalar(lex); continue; } // TODO: inline, should be the only caller
-                if (peek == LexTokenType.Indent)
-                {
-                    SetIndent(lex[here].Length);
-                    if (indent <= minIndent) { throw Failed($"Unexpected scalar dedent."); } // Line handler should have peeked through indentation
-                    here++; // after indent
-                    continue;
-                }
-                if (peek == LexTokenType.Colon)
-                {
-                    if (scalarLines) { throw Failed($"Map key cannot span multiple lines: {scalarValue}."); }
-                    AddToken(ParseTokenType.MapStart, null, here); // TODO: actual start is the scalar start, not here
-                    AddToken(ParseTokenType.Scalar, scalarValue, here); // map key // TODO: actual start is the scalar start, not here
-                    Swap(ParseState.Mappings); // scalar -> map key
-
-                    var mapValueIndent = GetCheat() /*indent*/; // TODO: this should be the column of the map key (are we just lucky?)
-                    Push(ParseState.MapValue, mapValueIndent); // map value must be indented more than current indent
-                    NewScalar(); // TODO: make obsolete
-                    here++; // advance after colon
-                    continue;
-                }
-                if (peek == LexTokenType.Text)
-                {
-                    if (scalarValue is not null) { AddScalar(lex[here].Value); }
-                    else
-                    {
-                        Debug($"Scalar starts at column {lex[here].Column}");
-                        SetCheat(lex[here].Column);
-                        SetScalar(lex[here].Value);
-                    }
-
-                    here++; // after text
-                    continue;
-                }
-            }
-            if (op == ParseState.Mappings)
-            {
-                if (peek == LexTokenType.End) { AddToken(ParseTokenType.MapEnd, null, here); Pop(); continue; }
-                if (peek == LexTokenType.DocumentEnd) { AddToken(ParseTokenType.MapEnd, null, here); Pop(); continue; }
-                if (peek == LexTokenType.Indent)
-                {
-                    if (AdvanceIndentIfEmptyLine(lex)) { continue; } // avoid escaping scope for empty lines without indentation
-
-                    SetIndent(lex[here].Length);
-                    if (indent <= minIndent)
-                    {
-                        AssertNoScalar();
-                        AddToken(ParseTokenType.MapEnd, null, here);
-                        Pop();
-                        continue;
-                    }
-                    here++; // after indent
-                    continue;
-                }
-                if (peek == LexTokenType.Line) { AssertNoScalar(); here++; continue; }
-                if (peek == LexTokenType.Colon)
-                {
-                    // TODO: OBSOLETE. This should have been moved to the scalar op
-                    if (scalarLines) { throw Failed($"Map key cannot span multiple lines: {scalarValue}."); }
-                    AddToken(ParseTokenType.Scalar, scalarValue, here); // map key
-                    Push(ParseState.MapValue, indent); // map value must be indented more than current indent
-                    NewScalar();
-                    here++; // advance after colon
-                    continue;
-                }
-                if (peek == LexTokenType.Text)
-                {
-                    // TODO: OBSOLETE. This should cause the op to swap to scalar
-                    if (scalarValue is null)
-                    {
-                        Debug($"Map key starts at column {lex[here].Column}");
-                        SetCheat(lex[here].Column);
-                        SetScalar(lex[here].Value);
-                    }
-                    else
-                    {
-                        AddScalar(lex[here].Value);
-                    }
-                    here++; // after text
-                    continue;
-                }
-            }
-            if (op == ParseState.MapValue)
-            {
-                if (peek == LexTokenType.End) { AddToken(ParseTokenType.Scalar, scalarValue, here); Pop(); continue; }
-                if (peek == LexTokenType.DocumentEnd)
-                {
-                    // TODO: OBSOLETE. SCALAR PROCESSING ELSEWHERE
-                    // TODO: AFTER MIGRATION, THIS ADDS NULL MAP VALUE INSTEAD
-                    AddToken(ParseTokenType.Scalar, scalarValue, here); // TODO: here=scalarStart
-                    Pop();
-                    continue;
-                }
-                if (peek == LexTokenType.Indent)
-                {
-                    // TODO: OBSOLETE. SCALAR PROCESSING ELSEWHERE
-                    SetIndent(lex[here].Length);
-                    if (indent <= minIndent)
-                    {
-                        // TODO: AFTER MIGRATION, THIS ADDS NULL MAP VALUE INSTEAD
-                        // Scalar should already have been handled
-                        AddToken(ParseTokenType.Scalar, scalarValue, here); // TODO: here=scalarStart
-                        NewScalar();
-                        Pop();
-                        continue;
-                    }
-
-                    here++; // after indent
-                    continue;
-                }
-                if (peek == LexTokenType.Colon)
-                {
-                    // TODO: OBSOLETE. SCALAR PROCESSING ELSEWHERE
-                    // Current mapping is nested, so scalar is a new map key
-                    if (scalarLines) { throw Failed($"Map key cannot span multiple lines: {scalarValue}."); }
-                    AddToken(ParseTokenType.MapStart, null, here);
-                    AddToken(ParseTokenType.Scalar, scalarValue, here); // map key
-                    Swap(ParseState.Mappings); // map value -> map key
-                    Push(ParseState.MapValue, indent); // map value must be indented more than current indent
-                    NewScalar();
-                    here++; // advance after colon
-                    continue;
-                }
-                if (peek == LexTokenType.Line)
-                {
-                    // TODO: OBSOLETE. SCALAR PROCESSING ELSEWHERE
-                    HandleLineForScalar(lex); // TODO: swap to scalar op
-                    continue;
-                }
-                if (peek == LexTokenType.Spaces)
-                {
-                    // TODO: OBSOLETE. SCALAR PROCESSING ELSEWHERE
-                    HandlesSpacesForScalar(lex);
-                    continue;
-                }
-                if (peek == LexTokenType.Text)
-                {
-                    // TODO: OBSOLETE. THIS CONVERTS TO SCALAR OP
-                    var segment = lex[here].Value;
-                    Debug($"Text: {segment}");
-                    if (scalarValue is null)
-                    {
-                        Debug($"Map value starts at column {lex[here].Column}");
-                        SetCheat(lex[here].Column);
-                        SetScalar(segment);
-                    }
-                    else
-                    {
-                        AddScalar(segment);
-                    }
-                    here++; // after text
-                    continue;
-                }
-                if (peek == LexTokenType.Dash)
-                {
-                    AssertNoScalar();
-                    AddToken(ParseTokenType.SeqStart, null, here);
-                    Swap(ParseState.Sequence); // map value -> sequence
-                    Push(ParseState.SequenceItem, lex[here].Column); // item must be indented more than the dash
-                    NewScalar(); // TODO: make obsolete
-                    here++; // after the dash
-                    continue;
-                }
-            }
-            if (op == ParseState.Sequence)
-            {
-                if (peek == LexTokenType.End)
-                {
-                    AddToken(ParseTokenType.SeqEnd, null, here);
-                    Pop();
-                    continue;
-                }
-                if (peek == LexTokenType.Indent)
-                {
-                    if (AdvanceIndentIfEmptyLine(lex)) { continue; } // avoid escaping scope for empty lines without indentation
-                    SetIndent(lex[here].Length);
-                    if (indent <= minIndent) { AddToken(ParseTokenType.SeqEnd, null, here); Pop(); continue; }
-                    here++; // after indent
-                    continue;
-                }
-                if (peek == LexTokenType.Line)
-                {
-                    AssertNoScalar();
-                    here++; // after line
-                    continue;
-                }
-                if (peek == LexTokenType.Dash)
-                {
-                    var sequenceItemIndent = lex[here].Column; /* TODO: was: indent */;
-                    Push(ParseState.SequenceItem, sequenceItemIndent); // item must be indented more than the dash
-                    NewScalar(); // TODO: make obsolete
-                    here++;
-                    continue;
-                }
-            }
-
-            // TODO: THIS IS WHERE YOU LEFT OFF
-            if (op == ParseState.SequenceItem) // TODO: item should be temporary until a specific token is found
-            {
-                if (peek == LexTokenType.Line)
-                {
-                    HandleLineForScalar(lex); // TODO: swap to scalar op
-                    continue;
-                }
-                if (peek == LexTokenType.Indent)
-                {
-                    SetIndent(lex[here].Length);
-                    if (indent <= minIndent)
-                    {
-                        // Scalar should already have been handled
-                        if (scalarValue is not null) { throw Failed($"TODO: SequenceItem scalar was not handled? text={scalarValue}."); }
-                        NewScalar();
-                        Pop();
-                        continue;
-                    }
-                    here++; // after indent
-                    continue;
-                }
-                if (peek == LexTokenType.Spaces)
-                {
-                    HandlesSpacesForScalar(lex);
-                    continue;
-                }
-                if (peek == LexTokenType.Text)
-                {
-                    var segment = lex[here].Value;
-                    Debug($"Text: {segment}");
-                    if (scalarValue is null)
-                    {
-                        Debug($"Sequence item starts at column {lex[here].Column}");
-                        SetCheat(lex[here].Column);
-                        SetScalar(segment);
-                    }
-                    else
-                    {
-                        AddScalar(segment);
-                    }
-                    here++; // after text
-                    continue;
-                }
-                if (peek == LexTokenType.Dash)
-                {
-                    // Nested sequence
-                    var itemCol = lex[here].Column;
-                    AddToken(ParseTokenType.SeqStart, null, here);
-                    Swap(ParseState.Sequence); // sequence item -> sequence
-                    Push(ParseState.SequenceItem, itemCol); // item must be indented more than the dash
-                    NewScalar();
-                    here++;
-                    continue;
-                }
-                if (peek == LexTokenType.Colon)
-                {
-                    if (scalarValue is null) { throw Failed($"Sequence item found mapping without a key."); }
-                    if (scalarLines) { throw Failed($"Map key cannot span multiple lines: {scalarValue}."); }
-                    AddToken(ParseTokenType.MapStart, null, here);
-                    AddToken(ParseTokenType.Scalar, scalarValue, here); // map key
-                    Swap(ParseState.Mappings); // sequence item -> map key
-                    Push(ParseState.MapValue, GetCheat()); // FAKE!!!!!!!!! // map value must be indented more than current indent
-                    NewScalar();
-                    here++; // after colon
-                    continue;
-                }
-            }
-            throw Failed($"Loop unhandled: op={op} peek={peek}.");
+            ParseStream(0, lex, 0, -1);
         }
+        catch
+        {
+            Console.WriteLine($"Parse failed, tokens: {tokens.Count}");
+            foreach (var token in tokens)
+            {
+                Console.WriteLine($"{token.Name} {token.Run.Start,4} {token.Run.Length,3} => {token.Value}");
+            }
+            throw;
+        }
+
         return tokens;
 
-        ///////////////////////////////////////////////////////////////////////////////////////////////////
-        ///
-        void AssertNoScalar()
-        {
-            if (scalarValue is not null) { throw Failed($"Unexpected scalar: {scalarValue}."); }
-        }
-        void SetCheat(int value)
-        {
-            Debug($"Set cheat: {value}");
-            cheat = value;
-        }
-        int GetCheat()
-        {
-            Debug($"Get cheat: {cheat}");
-            return cheat;
-        }
-        void AdvanceIndent(ReadOnlySpan<LexToken> lex)
-        {
-            Debug("Advancing indent");
-            var it = lex[here];
-            if (it.Type != LexTokenType.Indent) { throw Failed($"Expected indent, found: {it.Type}."); }
-            here++; // after indent
-        }
-        bool AdvanceIndentIfEmptyLine(ReadOnlySpan<LexToken> lex)
-        {
-            Debug("Advancing indent if empty line");
-
-            var it = lex[here];
-            if (it.Type != LexTokenType.Indent) { throw Failed($"Expected indent, found: {it.Type}."); }
-
-            var peek1 = Peek(lex, here + 1);
-            if (peek1 == LexTokenType.Line)
-            {
-                here += 2; // ignore blank lines
-                return true;
-            }
-            return false;
-        }
-        void SetIndent(int newIndent)
-        {
-            Debug($"Set indent: {newIndent}");
-            indent = newIndent;
-        }
-
-        void HandleLineForScalar(ReadOnlySpan<LexToken> lex)
-        {
-            Debug("Handle line for scalar");
-            var peek = Peek(lex, here);
-            if (peek != LexTokenType.Line) { throw Failed($"Expected line, found: {peek}."); }
-
-            // Before appending line to scalar, check to see if the line starts a new node
-            var here1 = here + 1;
-            var peek1 = Peek(lex, here1);
-            if (peek1 == LexTokenType.Indent) { SetIndent(lex[here1].Length); }
-            else if (peek1 != LexTokenType.End) { throw Failed($"Expected indent, found: {peek1}."); }
-
-            here++; // after line
-            if (indent <= minIndent)
-            {
-                AddToken(ParseTokenType.Scalar, scalarValue, here);
-                NewScalar();
-                Pop();
-                return; // at indent, for recursive pop
-            }
-
-            // Line is part of the current scalar
-            if (scalarValue is not null)
-            {
-                AddScalarLine();
-            }
-        }
-
-        void HandlesSpacesForScalar(ReadOnlySpan<LexToken> lex)
-        {
-            Debug("Handle spaces for scalar");
-
-            if (scalarValue is null)
-            {
-                Debug("Ignore leading spaces");
-                // ignore leading spaces
-                here++;
-                return;
-            }
-            var spaces = lex[here].Value.Length;
-            here++; // after spaces
-            var peek1 = Peek(lex, here);
-            if (peek1 == LexTokenType.Line)
-            {
-                // ignore leading whitespace
-                here++; // after line
-                return;
-            }
-            if (peek1 == LexTokenType.Text)
-            {
-                var segment = lex[here].Value;
-                Debug($"Text: sp({spaces}){segment}");
-                AddScalar(new String(' ', spaces));
-                AddScalar(segment);
-                here++; // after text
-                return;
-            }
-            throw Failed($"Scalar spaces followed by {peek1}.");
-        }
-
-        ///////////////////////////////////////////////////////////////////////////////////////////////////
-        void NewScalar(String? initialValue = null)
-        {
-            Debug($"Reset scalar: {initialValue}");
-            scalarValue = initialValue;
-            scalarLines = false;
-        }
-        void SetScalar(String? value)
-        {
-            Debug($"Set scalar: {value}");
-            scalarValue = value;
-            scalarLines = false;
-        }
-        void AddScalar(String? value)
-        {
-            if (scalarValue is null) { throw Failed($"Add scalar: null + {value}."); }
-            var old = scalarValue;
-            scalarValue += value;
-            Debug($"Add scalar: {old} => {scalarValue}");
-        }
-        void AddScalarLine()
-        {
-            Debug($"Add scalar line");
-            scalarValue += "\n";
-            scalarLines = true;
-        }
-
-        void Swap(ParseState nextOp)
-        {
-            Debug($"=== SWAP: {op} -> {nextOp}", -1);
-            op = nextOp;
-        }
-        void Push(ParseState nextOp, int parentMinIndent)
-        {
-            Debug($"=== PUSH: {op}({minIndent}) -> {nextOp}({parentMinIndent})", 1);
-            var was = op;
-
-            if (depth >= MAX_DEPTH) { throw new InvalidOperationException("Stack overflow"); }
-            opStack[depth] = op;
-            inStack[depth] = minIndent;
-            depth++;
-
-            op = nextOp;
-            minIndent = parentMinIndent;
-        }
-
-        void Pop()
-        {
-            var was = op;
-            var childMinIndent = minIndent;
-
-            if (depth <= 0) { throw new InvalidOperationException("Stack underflow"); }
-            depth--;
-            op = opStack[depth];
-            minIndent = inStack[depth];
-
-            Debug($"=== POP: {op}({minIndent}) <- {was}({childMinIndent})", 1);
-        }
-        void Debug(String message, int add = 0)
+        void AddToken(Node node) => tokens.Add(node);
+        LexTokenType Peek(ReadOnlySpan<LexToken> lex, int i) => i >= lexLength ? LexTokenType.End : lex[i].Type;
+        NotImplementedException UnexpectedToken(LexTokenType token, int i) => new($"Unexpected token: {token} at {i}");
+        NotImplementedException UnexpectedNode(Node node, String? message = null) => new($"Unexpected node: {node.Type} at {node.Run.Start}{(message is null ? "" : $" - {message}")}");
+        NotImplementedException NoProgress(int i, String? message = null) => new($"No progress: at {i}{(message is null ? "" : $" - {message}")}");
+        NotImplementedException InfiniteLoop(int i) => new($"Infinite loop at {i}");
+        void Debug(String message, int indent = 0)
         {
             if (!debug) return;
-            Console.Write(new String(' ', depth * 2 + add));
-            Console.WriteLine(message);
+            Console.Write(new String(' ', indent * 2));
+            Console.WriteLine($"{message}");
         }
-        void AddToken(ParseTokenType type, String? value, int start)
+
+        bool IsNextTokenColon(ReadOnlySpan<LexToken> lex, int i) => ScanForColon(lex, i) is not null;
+        int? ScanForColon(ReadOnlySpan<LexToken> lex, int i)
         {
-            Debug($"=== ADD: {type} {value} @{start}");
-            tokens.Add(new(type, value, start));
+            while (true)
+            {
+                var peek = Peek(lex, i);
+
+                // Found
+                if (peek == LexTokenType.Colon) { return i; }
+
+                // Found something else
+                if (peek == LexTokenType.End) { return null; }
+                if (peek == LexTokenType.Text) { return null; }
+                if (peek == LexTokenType.DocumentEnd) { return null; }
+                if (peek == LexTokenType.DocumentStart) { return null; }
+                if (peek == LexTokenType.Dash) { return null; }
+
+                // Keep scanning
+                if (peek == LexTokenType.Spaces) { i++; continue; }
+                if (peek == LexTokenType.Line) { i++; continue; }
+                if (peek == LexTokenType.Indent) { i++; continue; }
+
+                throw UnexpectedToken(peek, i);
+            }
         }
-        LexTokenType Peek(ReadOnlySpan<LexToken> lex, int i) => i >= lexLength ? LexTokenType.End : lex[i].Type;
-        Exception Failed(String message) => new($"PARSE FAIL at {here}: {message}\n{String.Join("\n", tokens.Select(i => i.Type))}");
+
+        Node ParseStream(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent)
+        {
+            depth++;
+            Debug($"ParseStream: min={min_indent}", depth);
+            var line_indent = 0;
+            var here = start;
+
+            AddToken(new(NodeType.StreamStart, start));
+
+            Node left;
+            while (true)
+            {
+                left = ScanLeafNode(depth, lex, here, min_indent);
+                Debug($"ParseStream found: {left.Type}", depth);
+
+                // done
+                if (left.Type is NodeType.End) { break; }
+
+                left = ParseDocument(depth, lex, here, min_indent, ref line_indent);
+                if (left.Type == NodeType.DocEnd) { here = left.Run.End; continue; }
+
+                // unexpected
+                throw NoProgress(here, $"ParseDocument returned {left.Type}");
+            }
+
+            left = new(NodeType.StreamEnd, here);
+            AddToken(left);
+            return left;
+        }
+
+        Node ParseDocument(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent, ref int line_indent)
+        {
+            depth++;
+            Debug($"ParseDocument: min={min_indent}", depth);
+
+            // Scan for any valid document indicator: doc+ / seq+ / text
+            var left = ParseLeafNode(depth, lex, start, min_indent, ref line_indent);
+
+            // Found 
+            var here = left.Run.End;
+            if (left.Type == NodeType.DocStart)
+            {
+                Debug($"Found doc+ at {start} ", depth);
+                AddToken(new(NodeType.DocStart, start));
+            }
+            else
+            {
+                Debug($"Found implicit doc+ at {start} ", depth);
+                AddToken(new(NodeType.DocStart, start));
+                here = start; // rewind
+            }
+
+            while (true)
+            {
+                Debug($"ParseDocument loop at {here}", depth);
+                var peek = Peek(lex, here);
+                if (peek is LexTokenType.End)
+                {
+                    // implicit doc-
+                    Debug($"Found implicit doc- at {here} ", depth);
+                    left = new(NodeType.DocEnd, here);
+                    AddToken(left);
+                    break;
+                }
+
+                left = ParseLeafNode(depth, lex, here, min_indent, ref line_indent);
+                if (left.Type == NodeType.DocEnd)
+                {
+                    // explicit doc-
+                    Debug($"Found doc- at {here} ", depth);
+                    AddToken(left);
+                    break;
+                }
+                if (left.Type is NodeType.End)
+                {
+                    // explicit doc-
+                    Debug($"Found implicit doc- at {here} ", depth);
+                    left = new(NodeType.DocEnd, here);
+                    AddToken(left);
+                    break;
+                }
+                if (left.Type == NodeType.Scalar)
+                {
+                    // Detect mapping
+                    if (!IsNextTokenColon(lex, left.Run.End)) { AddToken(left); }
+                    else
+                    {
+                        Debug($"Found map at {here}", depth);
+                        left = ParseMappings(depth, lex, here, min_indent, ref line_indent);
+                        if (left.Type != NodeType.MapEnd) { throw UnexpectedNode(left, $"ParseMappings should return MapEnd"); }
+                    }
+                    here = left.Run.End;
+                    continue;
+                }
+                if (left.Type == NodeType.SeqStart)
+                {
+                    Debug($"Found seq+ at {here}", depth);
+                    left = ParseSequence(depth, lex, here, min_indent, ref line_indent);
+                    if (left.Type != NodeType.SeqEnd) { throw UnexpectedNode(left, $"ParseSequence should return MapEnd"); }
+                    here = left.Run.End;
+                    continue;
+                }
+
+                throw UnexpectedNode(left, $"Document type unexpected.");
+            }
+
+            Debug($"ParseDocument return {left.Type} -> {left.Run.End}", depth);
+            return left;
+        }
+
+        Node ParseSequence(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent, ref int line_indent)
+        {
+            depth++;
+            Debug($"ParseSequence: min={min_indent}", depth);
+
+            AddToken(new(NodeType.SeqStart, start));
+            var here = start;
+
+            Node left;
+            while (true)
+            {
+                left = ParseLeafNode(depth, lex, here, min_indent, ref line_indent);
+                if (left.Type is NodeType.End or NodeType.Dedent) { break; }
+                else if (left.Type != NodeType.SeqStart) { throw UnexpectedNode(left, $"Expected SeqStart"); }
+
+                var item_indent = line_indent;
+                here = left.Run.End;
+
+                left = ParseLeafNode(depth, lex, here, item_indent, ref line_indent);
+                if (left.Type is NodeType.End)
+                {
+                    Debug("No sequence item node", depth);
+                    AddToken(new(NodeType.Scalar, here..here, null));
+                    break;
+                }
+                if (left.Type is NodeType.Dedent)
+                {
+                    Debug("No sequence item node", depth);
+                    AddToken(new(NodeType.Scalar, here..here, null));
+
+                    var left2 = ScanLeafNode(depth, lex, here, min_indent);
+                    if (left2.Type is NodeType.SeqStart) { continue; }
+                    break;
+                }
+
+                if (left.Type == NodeType.Scalar)
+                {
+                    // Detect mapping
+                    if (!IsNextTokenColon(lex, left.Run.End)) { AddToken(left); }
+                    else
+                    {
+                        Debug($"Found map at {here}", depth);
+                        left = ParseMappings(depth, lex, here, item_indent, ref line_indent);
+                        if (left.Type != NodeType.MapEnd) { throw UnexpectedNode(left, $"ParseMappings should return MapEnd"); }
+                    }
+                    here = left.Run.End;
+                    continue;
+                }
+
+                // TODO: indents are wrong if multiple sequences start on same line
+                if (left.Type == NodeType.SeqStart)
+                {
+                    Debug($"Found seq+ at {here}", depth);
+                    left = ParseSequence(depth, lex, here, item_indent, ref line_indent);
+                    if (left.Type != NodeType.SeqEnd) { throw UnexpectedNode(left, $"ParseSequence should return SeqEnd"); }
+                    here = left.Run.End;
+                    continue;
+                }
+
+                throw UnexpectedNode(left, $"Sequence item type unexpected.");
+            }
+
+            left = new(NodeType.SeqEnd, left.Run);
+            AddToken(left);
+            return left;
+        }
+
+        Node ParseMappings(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent, ref int line_indent)
+        {
+            depth++;
+            Debug($"ParseMappings: min={min_indent}", depth);
+
+            AddToken(new(NodeType.MapStart, start));
+
+            var here = start;
+
+            while (true)
+            {
+                // Key
+                var left = ParseLeafNode(depth, lex, here, min_indent, ref line_indent);
+                switch (left.Type)
+                {
+                    // keys
+                    case NodeType.Scalar: break; // break switch
+
+                    // non-keys
+                    case NodeType.End:
+                    case NodeType.Dedent:
+                    case NodeType.DocEnd:
+                        goto done; // break while
+
+                    default: throw UnexpectedNode(left, $"Mapping key type unexpected.");
+                }
+                AddToken(left);
+
+                // TODO: TEMPORARY MIN_INDENT IS SET TO LEADING OF KEY
+                if (line_indent <= min_indent) { throw new InvalidOperationException("Value indent must be greater than key indent."); }
+                var value_indent = line_indent;
+
+                // Advance to value
+                here = left.Run.End;
+                if (ScanForColon(lex, here) is not { } colon) { throw UnexpectedToken(Peek(lex, here), here); }
+                here = colon + 1;
+
+                // Scan for any valid value indicator: seq+ / text
+                left = ParseLeafNode(depth, lex, here, value_indent, ref line_indent);
+                switch (left.Type)
+                {
+                    case NodeType.Scalar:
+                    {
+                        // Detect mapping
+                        if (!IsNextTokenColon(lex, left.Run.End)) { AddToken(left); break; }
+                        else
+                        {
+                            Debug($"Found map at {here}", depth);
+                            left = ParseMappings(depth, lex, here, value_indent, ref line_indent);
+                            if (left.Type != NodeType.MapEnd) { throw UnexpectedNode(left, $"ParseMappings should return MapEnd"); }
+                        }
+                        break;
+                    }
+                    case NodeType.SeqStart:
+                    {
+
+                        Debug($"Found seq+ at {here}", depth);
+                        left = ParseSequence(depth, lex, here, value_indent, ref line_indent);
+                        if (left.Type != NodeType.SeqEnd) { throw UnexpectedNode(left, $"ParseSequence should return SeqEnd"); }
+                        here = left.Run.End;
+                        break;
+                    }
+                    default: throw UnexpectedNode(left, $"Mapping value type unexpected.");
+                }
+                here = left.Run.End;
+            }
+        done:
+
+            Node end = new(NodeType.MapEnd, here);
+            AddToken(end);
+            Debug($"ParseMappings done at {here}", depth);
+            return end;
+        }
+
+        Node ScanLeafNode(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent)
+        {
+            int ignore = 0;
+            return ParseLeafNode(depth, lex, start, min_indent, ref ignore);
+        }
+        Node ParseLeafNode(int depth, ReadOnlySpan<LexToken> lex, int start, int min_indent, ref int line_indent)
+        {
+            // TODO: Make sure all nodes have correct start and end positions for Run.
+            // End must be where parsing resumes.
+
+            depth++;
+            Debug($"ParseLeaf: start={start} min={min_indent}", depth);
+
+            // Find start of scalar, another node, or return empty
+            var here = start;
+            while (true)
+            {
+                var peek = Peek(lex, here);
+
+                // Start of scalar
+                if (peek == LexTokenType.Text) { break; }
+
+                // Marker tokens
+                if (peek == LexTokenType.End) { return Node.End(start..here); }
+                if (peek == LexTokenType.DocumentStart) { return new(NodeType.DocStart, here..(here + 1)); }
+                if (peek == LexTokenType.DocumentEnd) { return new(NodeType.DocEnd, here..(here + 1)); }
+                if (peek == LexTokenType.Dash) { return new(NodeType.SeqStart, here..(here + 1)); }
+
+                // Ignore initial whitespace
+                if (peek == LexTokenType.Spaces) { line_indent += lex[here].Length; here++; continue; }
+                if (peek == LexTokenType.Line)
+                {
+                    var here1 = here + 1; // after line
+                    var peek1 = Peek(lex, here1);
+                    if (peek1 == LexTokenType.Indent) { here = here1; line_indent += lex[here1].Length; continue; }
+                    else if (peek1 == LexTokenType.End) { return Node.End(start..here); }
+
+                    throw UnexpectedToken(peek1, here1);
+                }
+                if (peek == LexTokenType.Indent)
+                {
+                    var indent = lex[here].Length;
+
+                    var here1 = here + 1;
+                    var peek1 = Peek(lex, here1);
+                    if (peek1 is LexTokenType.Text or LexTokenType.Dash or LexTokenType.Colon)
+                    {
+                        if (indent <= min_indent)
+                        {
+                            return Node.Dedent(start..here);
+                        }
+                        here = here1; // at first token of line
+                        line_indent = indent;
+                        continue;
+                    }
+
+                    if (peek1 is LexTokenType.Line) { here = here1; line_indent = 0; continue; }
+
+                    line_indent = indent;
+                    if (peek1 is LexTokenType.DocumentStart) { return new(NodeType.DocStart, here..(here1 + 1)); }
+                    else if (peek1 is LexTokenType.DocumentEnd) { return new(NodeType.DocEnd, here..(here1 + 1)); }
+                    else if (peek1 is LexTokenType.End) { return Node.End(start..here1); }
+                    else { throw UnexpectedToken(peek1, here1); }
+                }
+
+                // TODO: update leading if text starts on subsequent line
+
+                throw UnexpectedToken(peek, start);
+            }
+
+            // Find end of scalar
+            var end = here;
+            end++; // after first text token
+            while (true)
+            {
+                var peek = Peek(lex, end);
+                Debug($"Scalar peek: {peek} at {end}", depth);
+
+                if (peek == LexTokenType.End) { break; }
+                if (peek == LexTokenType.DocumentEnd) { break; }
+                if (peek == LexTokenType.DocumentStart) { break; }
+                if (peek == LexTokenType.Dash) { break; }
+                if (peek == LexTokenType.Colon) { break; }
+
+                // Scalars consist of text and whitespace
+                if (peek == LexTokenType.Text) { end++; continue; }
+                if (peek == LexTokenType.Spaces) { end++; continue; }
+                if (peek == LexTokenType.Line) { end++; continue; }
+                if (peek == LexTokenType.Indent)
+                {
+                    var indent = lex[end].Length;
+                    if (indent <= min_indent) { break; }
+                    end++;
+                    continue;
+                }
+            }
+
+            // FIXME: YAML string processing
+            String scalarValue = "";
+            for (int i = start; i < end; i++)
+            {
+                if (lex[i].Type == LexTokenType.Text)
+                {
+                    scalarValue += lex[i].Value;
+                }
+                else
+                {
+                    scalarValue += " ";
+                }
+            }
+
+            Debug($"ParseLeaf done: {start} -> ({here} - {end}) = {scalarValue}", depth);
+            Node node = new(NodeType.Scalar, start..end, scalarValue);
+            return node;
+        }
     }
 }

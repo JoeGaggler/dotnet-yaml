@@ -7,7 +7,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     Console.WriteLine($"--- {yamlPath} ---");
     var yaml = File.ReadAllText(yamlPath);
 
-    List<Pingmint.Yaml.ParseToken> expect;
+    List<Pingmint.Yaml.Node> expect;
     var overridePath = yamlPath.Replace(".yml", ".expect.yml");
     if (File.Exists(overridePath))
     {
@@ -25,7 +25,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     Console.WriteLine("Expect:");
     foreach (var line in expect)
     {
-        Console.WriteLine($"{line.Name} {line.Start,4} {line.Length,3} => {line.Value}");
+        Console.WriteLine($"{line.Name} {line.Run.Start,4} {line.Run.Length,3} => {line.Value}");
     }
 
     var tokens = Pingmint.Yaml.Parser.Lex(yaml);
@@ -44,7 +44,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     Console.WriteLine("Actual:");
     foreach (var line in actual)
     {
-        Console.WriteLine($"{line.Name} {line.Start,4} {line.Length,3} => {line.Value}");
+        Console.WriteLine($"{line.Name} {line.Run.Start,4} {line.Run.Length,3} => {line.Value}");
     }
 
     Console.WriteLine();
