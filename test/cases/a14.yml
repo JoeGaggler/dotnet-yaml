@@ -1,0 +1,16 @@
+- this:is:ok
+- this#is#ok  #blah
+# this is ok
+- this is ok #blah
+- this is ok  #blah
+- this is ok   #  blah
+- this|is|ok
+- this>is>ok
+- this-is-ok
+- this'is'ok
+- this"is"ok
+
+- this>-is|-ok
+- this##is##ok
+- this''is''ok
+- this""is""ok

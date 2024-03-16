@@ -247,13 +247,14 @@ public static class Parser
             {
                 // TODO: this is likely wrong when the string contains lexer tokens
                 var c2 = yaml[here];
-                if (Char.IsLetterOrDigit(c2)) { }
-                else if (c2 == ' ') { break; }
+                if (c2 == ' ') { break; }
                 else if (c2 == '\r') { break; }
                 else if (c2 == '\n') { break; }
-                else if (c2 == ':') { break; }
-                else if (c2 == '-') { break; }
-                else if (c2 == '#') { break; }
+                else if (c2 == ':')
+                {
+                    // colon allowed in text as long as it is not followed by a space
+                    if (here + 1 < yaml.Length && yaml[here + 1] is var c3 && (c3 == ' ' || c3 == '\r' || c3 == '\n')) { break; }
+                }
                 here++;
                 col++;
             }
@@ -532,12 +533,17 @@ public static class Parser
 
         // Find start of scalar, another node, or return empty
         var here = start;
+        var first = start;
         while (true)
         {
             var peek = lex.Peek(here);
 
             // Start of scalar
-            if (peek == LexTokenType.Text) { break; }
+            if (peek == LexTokenType.Text)
+            {
+                first = here;
+                break;
+            }
 
             // Marker tokens
             if (peek == LexTokenType.End) { return new(NodeType.End, start..here); }
@@ -589,6 +595,7 @@ public static class Parser
 
         // Find end of scalar
         var end = here;
+        var last = here;
         end++; // after first text token
         while (true)
         {
@@ -605,6 +612,7 @@ public static class Parser
             { break; }
 
             // Accumulate
+            if (peek == LexTokenType.Text) { last = end; end++; continue; }
             if (peek.MatchesAny(LexTokenType.Text, LexTokenType.Spaces, LexTokenType.Line)) { end++; continue; }
 
             // Check indent
@@ -621,17 +629,18 @@ public static class Parser
             throw UnexpectedToken(peek, end);
         }
 
-        // FIXME: YAML string processing
         String scalarValue = "";
-        for (int i = start; i < end; i++)
+        bool emitSpace = false;
+        for (int i = first; i <= last; i++)
         {
             if (lex[i].Type == LexTokenType.Text)
             {
+                if (emitSpace) { scalarValue += " "; emitSpace = false; }
                 scalarValue += lex[i].Value;
             }
             else
             {
-                scalarValue += " ";
+                emitSpace = true;
             }
         }
 
