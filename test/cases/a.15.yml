@@ -1,0 +1,6 @@
+block: |
+  this is
+  a block scalar
+folded: >
+  this is a
+  folded scalar

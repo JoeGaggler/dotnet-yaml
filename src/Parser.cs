@@ -36,6 +36,8 @@ public enum LexTokenType
     Colon,
     Dash,
     Text,
+    BlockIndicator,
+    FoldedIndicator,
 }
 
 public struct LexToken
@@ -225,9 +227,18 @@ public static class Parser
                 continue;
             }
 
-            if (c is '|' or '>')
+            if (c is '|')
             {
-                throw new InvalidOperationException($"String modes not implemented, char: {c} at position {here}");
+                tokens.Add(new LexToken(LexTokenType.BlockIndicator, here, 0, "", 0));
+                here++;
+                continue;
+            }
+
+            if (c is '>')
+            {
+                tokens.Add(new LexToken(LexTokenType.FoldedIndicator, here, 0, "", 0));
+                here++;
+                continue;
             }
 
             if (c is '.')
@@ -531,9 +542,23 @@ public static class Parser
         depth++;
         Debug($"ParseLeaf: start={start} min={min_indent}", depth);
 
-        // Find start of scalar, another node, or return empty
+        // Check for indicators
         var here = start;
-        var first = start;
+        bool is_block = false;
+        bool is_folded = false;
+        while (true)
+        {
+            var peek = lex.Peek(here);
+            if (peek is LexTokenType.Spaces) { line_indent += lex[here].Length; here++; continue; }
+
+            if (peek is LexTokenType.BlockIndicator) { here++; is_block = true; break; }
+            if (peek is LexTokenType.FoldedIndicator) { here++; is_folded = true; break; }
+
+            break;
+        }
+
+        // Find start of scalar, another node, or return empty
+        var first = here;
         while (true)
         {
             var peek = lex.Peek(here);
@@ -613,7 +638,7 @@ public static class Parser
 
             // Accumulate
             if (peek == LexTokenType.Text) { last = end; end++; continue; }
-            if (peek.MatchesAny(LexTokenType.Text, LexTokenType.Spaces, LexTokenType.Line)) { end++; continue; }
+            if (peek.MatchesAny(LexTokenType.Text, LexTokenType.Spaces, LexTokenType.Line)) { last = end; end++; continue; }
 
             // Check indent
             if (peek == LexTokenType.Indent)
@@ -630,17 +655,42 @@ public static class Parser
         }
 
         String scalarValue = "";
-        bool emitSpace = false;
-        for (int i = first; i <= last; i++)
+        if (is_block)
         {
-            if (lex[i].Type == LexTokenType.Text)
+            bool eatSpace = false;
+            for (int i = first; i <= last; i++)
             {
-                if (emitSpace) { scalarValue += " "; emitSpace = false; }
-                scalarValue += lex[i].Value;
+                if (lex[i].Type == LexTokenType.Text)
+                {
+                    scalarValue += lex[i].Value;
+                    eatSpace = false;
+                }
+                else if (lex[i].Type == LexTokenType.Line)
+                {
+                    scalarValue += "\n";
+                    eatSpace = true;
+                }
+                else if (lex[i].Type == LexTokenType.Spaces)
+                {
+                    if (eatSpace) { eatSpace = false; }
+                    else { scalarValue += " "; }
+                }
             }
-            else
+        }
+        else // folded
+        {
+            bool emitSpace = false;
+            for (int i = first; i <= last; i++)
             {
-                emitSpace = true;
+                if (lex[i].Type == LexTokenType.Text)
+                {
+                    if (emitSpace) { scalarValue += " "; emitSpace = false; }
+                    scalarValue += lex[i].Value;
+                }
+                else
+                {
+                    emitSpace = true;
+                }
             }
         }
 
