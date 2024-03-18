@@ -1,6 +1,19 @@
+start: true
 block: |
   this is
   a block scalar
+block-chomped: |-
+  this is
+  a block scalar
+  that is chomped
 folded: >
   this is a
   folded scalar
+folded-chomped: >-
+  this is a
+  folded scalar
+  that is chomped
+plain:
+  this is a 
+  plain scalar
+end: true

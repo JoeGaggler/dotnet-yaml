@@ -37,7 +37,9 @@ public enum LexTokenType
     Dash,
     Text,
     BlockIndicator,
+    BlockIndicatorChomped,
     FoldedIndicator,
+    FoldedIndicatorChomped,
 }
 
 public struct LexToken
@@ -229,16 +231,34 @@ public static class Parser
 
             if (c is '|')
             {
-                tokens.Add(new LexToken(LexTokenType.BlockIndicator, here, 0, "", 0));
-                here++;
-                continue;
+                if (here + 1 < yaml.Length && yaml[here + 1] is '-')
+                {
+                    tokens.Add(new LexToken(LexTokenType.BlockIndicatorChomped, here, 0, "", 0));
+                    here += 2;
+                    continue;
+                }
+                else
+                {
+                    tokens.Add(new LexToken(LexTokenType.BlockIndicator, here, 0, "", 0));
+                    here++;
+                    continue;
+                }
             }
 
             if (c is '>')
             {
-                tokens.Add(new LexToken(LexTokenType.FoldedIndicator, here, 0, "", 0));
-                here++;
-                continue;
+                if (here + 1 < yaml.Length && yaml[here + 1] is '-')
+                {
+                    tokens.Add(new LexToken(LexTokenType.FoldedIndicatorChomped, here, 0, "", 0));
+                    here += 2;
+                    continue;
+                }
+                else
+                {
+                    tokens.Add(new LexToken(LexTokenType.FoldedIndicator, here, 0, "", 0));
+                    here++;
+                    continue;
+                }
             }
 
             if (c is '.')
@@ -546,14 +566,19 @@ public static class Parser
         var here = start;
         bool is_block = false;
         bool is_folded = false;
+        bool is_chomped = false;
         while (true)
         {
             var peek = lex.Peek(here);
-            if (peek is LexTokenType.Spaces) { line_indent += lex[here].Length; here++; continue; }
+            if (peek is LexTokenType.Spaces) { line_indent += lex[here].Length; here++; continue; } // leading spaces are ignored
 
+            // Indicators
             if (peek is LexTokenType.BlockIndicator) { here++; is_block = true; break; }
+            if (peek is LexTokenType.BlockIndicatorChomped) { here++; is_block = true; is_chomped = true; break; }
             if (peek is LexTokenType.FoldedIndicator) { here++; is_folded = true; break; }
+            if (peek is LexTokenType.FoldedIndicatorChomped) { here++; is_folded = true; is_chomped = true; break; }
 
+            // No indicator
             break;
         }
 
@@ -667,7 +692,7 @@ public static class Parser
                 }
                 else if (lex[i].Type == LexTokenType.Line)
                 {
-                    scalarValue += "\n";
+                    if (!is_chomped || i != last) { scalarValue += "\n"; }
                     eatSpace = true;
                 }
                 else if (lex[i].Type == LexTokenType.Spaces)
@@ -686,6 +711,10 @@ public static class Parser
                 {
                     if (emitSpace) { scalarValue += " "; emitSpace = false; }
                     scalarValue += lex[i].Value;
+                }
+                else if (lex[i].Type == LexTokenType.Line)
+                {
+                    if (!is_chomped || i != last) { scalarValue += "\n"; }
                 }
                 else
                 {
