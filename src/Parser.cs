@@ -3,8 +3,7 @@
 // Update ParseLeafNode to return valid Run positions
 // Fix Lex String parsing
 // Fix Lex start of document
-// Make parse methods static
-// Fix string processing / add string folding
+// Remove debug output
 
 namespace Pingmint.Yaml;
 
@@ -163,6 +162,56 @@ public static class Parser
                 }
                 tokens.Add(new LexToken(LexTokenType.Spaces, start2, here - start2, yaml[start2..here].ToString(), myCol));
                 continue;
+            }
+
+            // TODO: replace this terrible dirty hack to fold newlines into single spaces
+            static String HackFoldNewLines(String text) => text.Replace("\r\n", "\n")
+                .Replace(" \n ", "\n")
+                .Replace(" \n", "\n")
+                .Replace("\n ", "\n")
+                .Replace(" \n", "\n")
+                .Replace("\n ", "\n")
+                .Replace("\n", " ");
+
+            if (c == '"')
+            {
+                var next = here + 1;
+                var start2 = next;
+                var myCol = col;
+                while (true)
+                {
+                    col++;
+                    if (next == yaml.Length) { throw new InvalidOperationException("Invalid double quote syntax"); }
+                    var next_char = yaml[next];
+                    if (next_char == '"') { break; }
+                    if (next_char == '\\')
+                    {
+                        next++;
+                        if (next == yaml.Length) { throw new InvalidOperationException("Invalid double quote syntax"); }
+                    }
+                    next++;
+                }
+
+                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString()), myCol));
+                here = next + 1;
+            }
+
+            if (c == '\'')
+            {
+                var next = here + 1;
+                var start2 = next;
+                var myCol = col;
+                while (true)
+                {
+                    col++;
+                    if (next == yaml.Length) { throw new InvalidOperationException("Invalid single quote syntax"); }
+                    var next_char = yaml[next];
+                    if (next_char == '\'') { break; }
+                    next++;
+                }
+
+                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString()), myCol));
+                here = next + 1;
             }
 
             if (c == '\r')
@@ -564,19 +613,30 @@ public static class Parser
 
         // Check for indicators
         var here = start;
-        bool is_block = false;
-        bool is_folded = false;
-        bool is_chomped = false;
+        bool is_folded = true;
+        bool is_chomped = true;
         while (true)
         {
             var peek = lex.Peek(here);
             if (peek is LexTokenType.Spaces) { line_indent += lex[here].Length; here++; continue; } // leading spaces are ignored
 
             // Indicators
-            if (peek is LexTokenType.BlockIndicator) { here++; is_block = true; break; }
-            if (peek is LexTokenType.BlockIndicatorChomped) { here++; is_block = true; is_chomped = true; break; }
-            if (peek is LexTokenType.FoldedIndicator) { here++; is_folded = true; break; }
-            if (peek is LexTokenType.FoldedIndicatorChomped) { here++; is_folded = true; is_chomped = true; break; }
+            if (peek is LexTokenType.BlockIndicator)
+            {
+                here++; is_folded = false; is_chomped = false; break;
+            }
+            if (peek is LexTokenType.BlockIndicatorChomped)
+            {
+                here++; is_folded = false; is_chomped = true; break;
+            }
+            if (peek is LexTokenType.FoldedIndicator)
+            {
+                here++; is_folded = true; is_chomped = false; break;
+            }
+            if (peek is LexTokenType.FoldedIndicatorChomped)
+            {
+                here++; is_folded = true; is_chomped = true; break;
+            }
 
             // No indicator
             break;
@@ -680,7 +740,7 @@ public static class Parser
         }
 
         String scalarValue = "";
-        if (is_block)
+        if (!is_folded)
         {
             bool eatSpace = false;
             for (int i = first; i <= last; i++)
@@ -702,7 +762,7 @@ public static class Parser
                 }
             }
         }
-        else // folded
+        else // is_folded
         {
             bool emitSpace = false;
             for (int i = first; i <= last; i++)
@@ -714,7 +774,8 @@ public static class Parser
                 }
                 else if (lex[i].Type == LexTokenType.Line)
                 {
-                    if (!is_chomped || i != last) { scalarValue += "\n"; }
+                    if (!is_chomped && i == last) { scalarValue += "\n"; }
+                    else { emitSpace = true; }
                 }
                 else
                 {

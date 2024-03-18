@@ -16,4 +16,12 @@ folded-chomped: >-
 plain:
   this is a 
   plain scalar
+single-quoted: 'this is a single-quoted scalar'
+double-quoted: "this is a double-quoted scalar"
+single-quoted-with-newline:
+  'this is a single-quoted scalar
+  with a newline'
+double-quoted-with-newline:
+  "this is a double-quoted scalar
+  with a newline"
 end: true
