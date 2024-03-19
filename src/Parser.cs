@@ -62,7 +62,7 @@ public struct LexToken
 public enum NodeType : int
 {
     End,
-    Dedent,
+    Dedent, // TODO: make obsolete
     StreamStart,
     StreamEnd,
     DocStart,

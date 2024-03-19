@@ -7,6 +7,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     Console.WriteLine($"--- {yamlPath} ---");
     var yaml = File.ReadAllText(yamlPath);
 
+    // Reference parser
     List<Pingmint.Yaml.Node> expect;
     var overridePath = yamlPath.Replace(".yml", ".expect.yml");
     if (File.Exists(overridePath))
@@ -28,6 +29,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
         Console.WriteLine($"{line.Name} {line.Run.Start,4} {line.Run.Length,3} => {line.Value}");
     }
 
+    // Lexer
     var tokens = Pingmint.Yaml.Parser.Lex(yaml);
     Console.WriteLine();
     Console.WriteLine("Lex Tokens:");
@@ -37,6 +39,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
         Console.WriteLine($"{tokenIndex++,4} {token.Column,-4} {token.Type} => {token.Value}");
     }
 
+    // Parser
     Console.WriteLine();
     Console.WriteLine("Parsing:");
     var actual = Pingmint.Yaml.Parser.Parse(tokens);
@@ -46,9 +49,19 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     {
         Console.WriteLine($"{line.Name} {line.Run.Start,4} {line.Run.Length,3} => {line.Value}");
     }
-
     Console.WriteLine();
 
+    // Exercise the YamlReader
+    Console.WriteLine();
+    Console.WriteLine("Reader:");
+    var reader = new Pingmint.Yaml.YamlReader(actual);
+    while (reader.Read())
+    {
+        Console.WriteLine($"{reader.NodeType} => {reader.Value}");
+    }
+    Console.WriteLine();
+
+    // Verify
     if (expect.Count != actual.Count)
     {
         Console.WriteLine("FAIL (count)");
@@ -85,9 +98,14 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     Console.WriteLine();
 }
 
-foreach (var line in log)
+// Errors
+if (log.Count > 0)
 {
-    Console.WriteLine(line);
+    Console.WriteLine("Errors:");
+    foreach (var line in log)
+    {
+        Console.WriteLine(line);
+    }
 }
 
 return 0;
