@@ -46,16 +46,14 @@ public struct LexToken
     public LexTokenType Type;
     public int Start;
     public int Length;
-    public int Column;
     public String Value;
 
-    public LexToken(LexTokenType type, int start, int length, String value, int column)
+    public LexToken(LexTokenType type, int start, int length, String value)
     {
         Type = type;
         Start = start;
         Length = length;
         Value = value;
-        Column = column;
     }
 }
 
@@ -124,43 +122,37 @@ public static class Parser
     {
         var tokens = new List<LexToken>();
         var here = 0;
-        var col = 0;
 
         // HACK: injecting indent at start of document
         if (yaml[0] == ' ') throw new NotImplementedException("First char cannot be a space"); // TODO
-        tokens.Add(new LexToken(LexTokenType.Indent, 0, 0, "", 0));
+        tokens.Add(new LexToken(LexTokenType.Indent, 0, 0, ""));
 
         while (here < yaml.Length)
         {
             var c = yaml[here];
-            Console.WriteLine($"LexLoop: {here} - col={col}: {c} {(int)c}");
+            Console.WriteLine($"LexLoop: {here}: {c} {(int)c}");
             if (c == '-')
             {
                 if (here + 2 < yaml.Length && yaml[here + 1] == '-' && yaml[here + 2] == '-')
                 {
-                    tokens.Add(new LexToken(LexTokenType.DocumentStart, here, 3, "---", col));
+                    tokens.Add(new LexToken(LexTokenType.DocumentStart, here, 3, "---"));
                     here += 3;
-                    col += 3;
                     continue;
                 }
-                tokens.Add(new LexToken(LexTokenType.Dash, here, 1, "-", col));
+                tokens.Add(new LexToken(LexTokenType.Dash, here, 1, "-"));
                 here++;
-                col++;
                 continue;
             }
 
             if (c == ' ')
             {
                 var start2 = here;
-                var myCol = col;
                 here++;
-                col++;
                 while (here < yaml.Length && yaml[here] == ' ')
                 {
                     here++;
-                    col++;
                 }
-                tokens.Add(new LexToken(LexTokenType.Spaces, start2, here - start2, yaml[start2..here].ToString(), myCol));
+                tokens.Add(new LexToken(LexTokenType.Spaces, start2, here - start2, yaml[start2..here].ToString()));
                 continue;
             }
 
@@ -177,10 +169,8 @@ public static class Parser
             {
                 var next = here + 1;
                 var start2 = next;
-                var myCol = col;
                 while (true)
                 {
-                    col++;
                     if (next == yaml.Length) { throw new InvalidOperationException("Invalid double quote syntax"); }
                     var next_char = yaml[next];
                     if (next_char == '"') { break; }
@@ -192,7 +182,7 @@ public static class Parser
                     next++;
                 }
 
-                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString()), myCol));
+                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString())));
                 here = next + 1;
             }
 
@@ -200,17 +190,15 @@ public static class Parser
             {
                 var next = here + 1;
                 var start2 = next;
-                var myCol = col;
                 while (true)
                 {
-                    col++;
                     if (next == yaml.Length) { throw new InvalidOperationException("Invalid single quote syntax"); }
                     var next_char = yaml[next];
                     if (next_char == '\'') { break; }
                     next++;
                 }
 
-                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString()), myCol));
+                tokens.Add(new LexToken(LexTokenType.Text, start2, next - start2, HackFoldNewLines(yaml[start2..next].ToString())));
                 here = next + 1;
             }
 
@@ -221,16 +209,14 @@ public static class Parser
                     throw new InvalidOperationException($"Unexpected char: {c} at position {here}");
                 }
                 here++;
-                // skip col update
                 c = yaml[here];
                 if (yaml[here] != '\n') { throw new InvalidOperationException($"Unexpected char: {c} at position {here}"); }
             }
 
             if (c == '\n')
             {
-                tokens.Add(new LexToken(LexTokenType.Line, here, 1, "\n", col));
+                tokens.Add(new LexToken(LexTokenType.Line, here, 1, "\n"));
                 here++;
-                col = 0;
                 if (here < yaml.Length)
                 {
                     if (yaml[here] == ' ')
@@ -242,13 +228,12 @@ public static class Parser
                             here++;
                         }
                         var len = here - start2;
-                        tokens.Add(new LexToken(LexTokenType.Indent, start2, here - start2, yaml[start2..here].ToString(), 0));
-                        col = len;
+                        tokens.Add(new LexToken(LexTokenType.Indent, start2, here - start2, yaml[start2..here].ToString()));
                         continue;
                     }
                     else
                     {
-                        tokens.Add(new LexToken(LexTokenType.Indent, here, 0, "", 0));
+                        tokens.Add(new LexToken(LexTokenType.Indent, here, 0, ""));
                     }
                 }
                 continue;
@@ -256,10 +241,9 @@ public static class Parser
 
             if (c == ':')
             {
-                Console.WriteLine($"Colon: {here} - col={col}");
-                tokens.Add(new LexToken(LexTokenType.Colon, here, 1, ":", col));
+                Console.WriteLine($"Colon: {here}");
+                tokens.Add(new LexToken(LexTokenType.Colon, here, 1, ":"));
                 here++;
-                col++;
                 continue;
             }
 
@@ -270,7 +254,6 @@ public static class Parser
                 {
                     if (yaml[here] == '\r' || yaml[here] == '\n')
                     {
-                        col = 0;
                         break;
                     }
                     here++;
@@ -282,13 +265,13 @@ public static class Parser
             {
                 if (here + 1 < yaml.Length && yaml[here + 1] is '-')
                 {
-                    tokens.Add(new LexToken(LexTokenType.BlockIndicatorChomped, here, 0, "", 0));
+                    tokens.Add(new LexToken(LexTokenType.BlockIndicatorChomped, here, 0, ""));
                     here += 2;
                     continue;
                 }
                 else
                 {
-                    tokens.Add(new LexToken(LexTokenType.BlockIndicator, here, 0, "", 0));
+                    tokens.Add(new LexToken(LexTokenType.BlockIndicator, here, 0, ""));
                     here++;
                     continue;
                 }
@@ -298,13 +281,13 @@ public static class Parser
             {
                 if (here + 1 < yaml.Length && yaml[here + 1] is '-')
                 {
-                    tokens.Add(new LexToken(LexTokenType.FoldedIndicatorChomped, here, 0, "", 0));
+                    tokens.Add(new LexToken(LexTokenType.FoldedIndicatorChomped, here, 0, ""));
                     here += 2;
                     continue;
                 }
                 else
                 {
-                    tokens.Add(new LexToken(LexTokenType.FoldedIndicator, here, 0, "", 0));
+                    tokens.Add(new LexToken(LexTokenType.FoldedIndicator, here, 0, ""));
                     here++;
                     continue;
                 }
@@ -314,15 +297,13 @@ public static class Parser
             {
                 if (here + 2 < yaml.Length && yaml[here + 1] == '.' && yaml[here + 2] == '.')
                 {
-                    tokens.Add(new LexToken(LexTokenType.DocumentEnd, here, 3, "...", col));
+                    tokens.Add(new LexToken(LexTokenType.DocumentEnd, here, 3, "..."));
                     here += 3;
-                    col += 3;
                     continue;
                 }
             }
 
             var start = here;
-            var textCol = col;
             while (here < yaml.Length)
             {
                 // TODO: this is likely wrong when the string contains lexer tokens
@@ -336,13 +317,12 @@ public static class Parser
                     if (here + 1 < yaml.Length && yaml[here + 1] is var c3 && (c3 == ' ' || c3 == '\r' || c3 == '\n')) { break; }
                 }
                 here++;
-                col++;
             }
 
-            Console.WriteLine($"Text: {start} - {here} col({textCol}-{col}) = {yaml[start..here]}");
-            tokens.Add(new LexToken(LexTokenType.Text, start, here - start, yaml[start..here].ToString(), textCol));
+            Console.WriteLine($"Text: {start} - {here} = {yaml[start..here]}");
+            tokens.Add(new LexToken(LexTokenType.Text, start, here - start, yaml[start..here].ToString()));
         }
-        tokens.Add(new LexToken(LexTokenType.End, here, 0, "", 0));
+        tokens.Add(new LexToken(LexTokenType.End, here, 0, ""));
         return tokens.ToArray();
     }
 

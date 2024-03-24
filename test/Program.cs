@@ -36,7 +36,7 @@ foreach (var yamlPath in Directory.GetFiles("cases", "*.yml").OrderBy(i => i))
     var tokenIndex = 0;
     foreach (var token in tokens)
     {
-        Console.WriteLine($"{tokenIndex++,4} {token.Column,-4} {token.Type} => {token.Value}");
+        Console.WriteLine($"{tokenIndex++,4} {token.Type} => {token.Value}");
     }
 
     // Parser
